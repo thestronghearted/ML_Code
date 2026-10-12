@@ -1,0 +1,62 @@
+import pandas as pd
+from sklearn.model_selection import train_test_split
+from sklearn.metrics import mutual_info_score, accuracy_score
+from sklearn.feature_extraction import DictVectorizer
+from sklearn.linear_model import LogisticRegression
+
+# Load data
+# wget https://raw.githubusercontent.com/DataTalksClub/machine-learning-zoomcamp/main/cohorts/2026/data/course_lead_scoring_2026.csv
+df = pd.read_csv('course_lead_scoring_2026.csv')
+print(df.isnull().sum())
+
+# Data preparation
+cat = list(df.select_dtypes(include=['object', 'string']).columns)
+num = [c for c in df.columns if c not in cat and c != 'converted']
+df[cat] = df[cat].fillna('NA')
+df[num] = df[num].fillna(0.0)
+
+# Q1: mode of industry
+print("Q1:", df['industry'].mode()[0])
+
+# Q2: correlation matrix
+corr = df[num].corr()
+print(corr)
+for a, b in [('interaction_count', 'lead_score'),
+             ('number_of_courses_viewed', 'lead_score'),
+             ('number_of_courses_viewed', 'interaction_count'),
+             ('annual_income', 'interaction_count')]:
+    print(f"Q2: {a} / {b}: {corr.loc[a, b]:.4f}")
+
+# Split
+df_full_train, df_test = train_test_split(df, test_size=0.2, random_state=42)
+df_train, df_val = train_test_split(df_full_train, test_size=0.25, random_state=42)
+y_train = df_train.pop('converted').values
+y_val = df_val.pop('converted').values
+df_test = df_test.drop(columns='converted')
+
+# Q3: mutual information (training set only)
+for c in cat:
+    print(f"Q3: {c}: {round(mutual_info_score(df_train[c], y_train), 2)}")
+
+# Helper: train + evaluate on validation
+def train_eval(cols, C=1.0):
+    dv = DictVectorizer(sparse=False)
+    X_train = dv.fit_transform(df_train[cols].to_dict(orient='records'))
+    X_val = dv.transform(df_val[cols].to_dict(orient='records'))
+    model = LogisticRegression(solver='liblinear', C=C, max_iter=1000, random_state=42)
+    model.fit(X_train, y_train)
+    return accuracy_score(y_val, model.predict(X_val))
+
+# Q4: logistic regression with one-hot encoding
+features = cat + num
+base_acc = train_eval(features)
+print("Q4:", round(base_acc, 2))
+
+# Q5: feature elimination
+for f in features:
+    acc = train_eval([x for x in features if x != f])
+    print(f"Q5: {f}: diff = {base_acc - acc:+.4f}")
+
+# Q6: regularization
+for C in [0.000001, 0.00001, 0.0001, 0.001]:
+    print(f"Q6: C={C}: {round(train_eval(features, C), 3)}")
