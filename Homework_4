@@ -1,0 +1,84 @@
+import numpy as np
+import pandas as pd
+import matplotlib.pyplot as plt
+from sklearn.model_selection import train_test_split, KFold
+from sklearn.feature_extraction import DictVectorizer
+from sklearn.linear_model import LogisticRegression
+from sklearn.metrics import roc_auc_score
+
+url = 'https://raw.githubusercontent.com/DataTalksClub/machine-learning-zoomcamp/main/cohorts/2026/data/course_lead_scoring_2026.csv'
+df = pd.read_csv(url)
+
+# --- Data preparation ---
+categorical = ['lead_source', 'industry', 'employment_status', 'location']
+numerical = ['annual_income', 'number_of_courses_viewed', 'interaction_count', 'lead_score']
+df[categorical] = df[categorical].fillna('NA')
+df[numerical] = df[numerical].fillna(0.0)
+
+df_full_train, df_test = train_test_split(df, test_size=0.2, random_state=1)
+df_train, df_val = train_test_split(df_full_train, test_size=0.25, random_state=1)
+df_train = df_train.reset_index(drop=True)
+df_val = df_val.reset_index(drop=True)
+y_train = df_train.converted.values
+y_val = df_val.converted.values
+del df_train['converted'], df_val['converted']
+
+# --- Q1: ROC AUC feature importance ---
+for c in numerical:
+    auc = roc_auc_score(y_train, df_train[c])
+    if auc < 0.5:
+        auc = roc_auc_score(y_train, -df_train[c])
+    print(f'{c:26s} {auc:.4f}')
+
+# --- Q2: Train model ---
+columns = categorical + numerical
+
+def train(df_tr, y_tr, C=1.0):
+    dv = DictVectorizer(sparse=False)
+    X = dv.fit_transform(df_tr[columns].to_dict(orient='records'))
+    model = LogisticRegression(solver='liblinear', C=C, max_iter=1000)
+    model.fit(X, y_tr)
+    return dv, model
+
+def predict(df_, dv, model):
+    X = dv.transform(df_[columns].to_dict(orient='records'))
+    return model.predict_proba(X)[:, 1]
+
+dv, model = train(df_train, y_train)
+y_pred = predict(df_val, dv, model)
+print(round(roc_auc_score(y_val, y_pred), 3))
+
+# --- Q3: Precision & recall ---
+rows = []
+for t in np.round(np.arange(0.0, 1.01, 0.01), 2):
+    tp = ((y_pred >= t) & (y_val == 1)).sum()
+    fp = ((y_pred >= t) & (y_val == 0)).sum()
+    fn = ((y_pred < t) & (y_val == 1)).sum()
+    p = tp / (tp + fp) if (tp + fp) > 0 else 0.0
+    r = tp / (tp + fn) if (tp + fn) > 0 else 0.0
+    rows.append((t, p, r))
+df_scores = pd.DataFrame(rows, columns=['threshold', 'precision', 'recall'])
+
+plt.plot(df_scores.threshold, df_scores.precision, label='precision')
+plt.plot(df_scores.threshold, df_scores.recall, label='recall')
+plt.legend(); plt.show()
+
+valid = df_scores[(df_scores.precision > 0) | (df_scores.recall > 0)].copy()
+valid['diff'] = (valid.precision - valid.recall).abs()
+print(valid.sort_values('diff').head(1))
+
+# --- Q4: F1 ---
+df_scores['f1'] = (2 * df_scores.precision * df_scores.recall /
+                   (df_scores.precision + df_scores.recall)).fillna(0)
+print(df_scores.loc[df_scores.f1.idxmax()])
+
+# --- Q5 & Q6: 5-fold CV ---
+for C in [0.000001, 0.001, 1]:
+    kfold = KFold(n_splits=5, shuffle=True, random_state=1)
+    scores = []
+    for train_idx, val_idx in kfold.split(df_full_train):
+        df_tr = df_full_train.iloc[train_idx]
+        df_va = df_full_train.iloc[val_idx]
+        dv, model = train(df_tr, df_tr.converted.values, C=C)
+        scores.append(roc_auc_score(df_va.converted.values, predict(df_va, dv, model)))
+    print(f'C={C:<8} mean={np.mean(scores):.3f}  std={np.std(scores):.3f}')
